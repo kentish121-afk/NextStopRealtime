@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">Next Stop Real Time</string>
+    <string name="search_hint">Search stop name or ATCO code…</string>
+    <string name="next_buses">Next 5 Buses</string>
+    <string name="no_results">No stops found</string>
+    <string name="error_loading">Failed to load data. Check connection.</string>
+    <string name="refresh">Refresh</string>
+    <string name="scheduled">Sched</string>
+    <string name="expected">Exp</string>
+    <string name="live">LIVE</string>
+    <string name="vehicle">Vehicle</string>
+    <string name="attribution">Data from bustimes.org • Open data</string>
+    <string name="select_stop">Select a stop to see real-time departures</string>
+    <string name="loading">Loading…</string>
+</resources>
