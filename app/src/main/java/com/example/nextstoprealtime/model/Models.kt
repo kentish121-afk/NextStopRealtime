@@ -121,3 +121,38 @@ data class VehicleJourney(
     val destination: String? = null,
     @SerialName("trip_id") val tripId: Long? = null
 )
+
+// GeoJSON response from /stops.json (bounding box for nearby stops)
+@Serializable
+data class StopsGeoJson(
+    val type: String? = null,
+    val features: List<StopFeature> = emptyList()
+)
+
+@Serializable
+data class StopFeature(
+    val type: String? = null,
+    val geometry: StopGeometry? = null,
+    val properties: StopProperties? = null
+)
+
+@Serializable
+data class StopGeometry(
+    val type: String? = null,
+    val coordinates: List<Double>? = null // [lon, lat]
+)
+
+@Serializable
+data class StopProperties(
+    val name: String? = null,
+    val indicator: String? = null,
+    val icon: String? = null,
+    val bearing: Int? = null,
+    val url: String? = null, // e.g. /stops/2900M114 → atco is the last part
+    val services: List<String>? = null,
+    @SerialName("stop_type") val stopType: String? = null,
+    @SerialName("bus_stop_type") val busStopType: String? = null
+) {
+    val atcoCode: String?
+        get() = url?.substringAfterLast('/')
+}
