@@ -21,7 +21,8 @@ data class UiState(
     val departures: List<Departure> = emptyList(),
     val isLoadingDepartures: Boolean = false,
     val error: String? = null,
-    val lastUpdated: Long? = null
+    val lastUpdated: Long? = null,
+    val isLoadingNearby: Boolean = false
 )
 
 class MainViewModel(
@@ -54,6 +55,33 @@ class MainViewModel(
                         it.copy(
                             isSearching = false,
                             error = e.message ?: "Search failed",
+                            stops = emptyList()
+                        )
+                    }
+                }
+        }
+    }
+
+    fun loadNearbyStops(latitude: Double, longitude: Double) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoadingNearby = true, isSearching = true, error = null, searchQuery = "Near me") }
+            repository.getNearbyStops(latitude, longitude)
+                .onSuccess { stops ->
+                    _uiState.update {
+                        it.copy(
+                            stops = stops,
+                            isSearching = false,
+                            isLoadingNearby = false,
+                            error = if (stops.isEmpty()) "No stops found nearby" else null
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _uiState.update {
+                        it.copy(
+                            isSearching = false,
+                            isLoadingNearby = false,
+                            error = e.message ?: "Failed to load nearby stops",
                             stops = emptyList()
                         )
                     }
