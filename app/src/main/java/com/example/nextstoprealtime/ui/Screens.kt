@@ -1,5 +1,10 @@
 package com.example.nextstoprealtime.ui
 
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -11,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.DirectionsBus
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
@@ -19,12 +25,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.nextstoprealtime.model.Departure
 import com.example.nextstoprealtime.model.Stop
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -95,11 +106,12 @@ fun NextStopApp(viewModel: MainViewModel) {
                     SearchScreen(
                         query = state.searchQuery,
                         stops = state.stops,
-                        isSearching = state.isSearching,
+                        isSearching = state.isSearching || state.isLoadingNearby,
                         error = state.error,
                         onQueryChange = viewModel::onSearchQueryChanged,
                         onStopSelected = viewModel::selectStop,
-                        onClearError = viewModel::clearError
+                        onClearError = viewModel::clearError,
+                        onNearbyRequested = { lat, lon -> viewModel.loadNearbyStops(lat, lon) }
                     )
                 } else {
                     DeparturesScreen(
@@ -116,6 +128,7 @@ fun NextStopApp(viewModel: MainViewModel) {
     }
 }
 
+@SuppressLint("MissingPermission")
 @Composable
 fun SearchScreen(
     query: String,
@@ -124,8 +137,40 @@ fun SearchScreen(
     error: String?,
     onQueryChange: (String) -> Unit,
     onStopSelected: (Stop) -> Unit,
-    onClearError: () -> Unit
+    onClearError: () -> Unit,
+    onNearbyRequested: (Double, Double) -> Unit
 ) {
+    val context = LocalContext.current
+    var permissionDenied by remember { mutableStateOf(false) }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val fineGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        val coarseGranted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (fineGranted || coarseGranted) {
+            permissionDenied = false
+            fetchCurrentLocation(context, onNearbyRequested)
+        } else {
+            permissionDenied = true
+        }
+    }
+
+    fun requestNearby() {
+        val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
+        val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (fine == PackageManager.PERMISSION_GRANTED || coarse == PackageManager.PERMISSION_GRANTED) {
+            fetchCurrentLocation(context, onNearbyRequested)
+        } else {
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -147,6 +192,28 @@ fun SearchScreen(
             singleLine = true,
             shape = RoundedCornerShape(12.dp)
         )
+
+        Spacer(Modifier.height(8.dp))
+
+        // Near me button (uses ACCESS_FINE_LOCATION)
+        OutlinedButton(
+            onClick = { requestNearby() },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !isSearching
+        ) {
+            Icon(Icons.Default.MyLocation, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(if (isSearching) "Finding nearby stops…" else "Near me (use my location)")
+        }
+
+        if (permissionDenied) {
+            Text(
+                "Location permission is required for nearby stops. Please grant it in Settings.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
 
         Spacer(Modifier.height(12.dp))
 
@@ -181,7 +248,7 @@ fun SearchScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(24.dp)
             )
-        } else if (query.length < 2) {
+        } else if (query.length < 2 && stops.isEmpty()) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -200,7 +267,7 @@ fun SearchScreen(
                     style = MaterialTheme.typography.titleMedium
                 )
                 Text(
-                    "Enter stop name or ATCO code to see the next 5 real-time departures and allocated vehicles (when AVL data is available).",
+                    "Enter a stop name or ATCO code, or tap “Near me” to find stops around your current location (requires location permission).",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp)
@@ -216,6 +283,29 @@ fun SearchScreen(
             }
         }
     }
+}
+
+@SuppressLint("MissingPermission")
+private fun fetchCurrentLocation(
+    context: android.content.Context,
+    onResult: (Double, Double) -> Unit
+) {
+    val client = LocationServices.getFusedLocationProviderClient(context)
+    val cts = CancellationTokenSource()
+    client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, cts.token)
+        .addOnSuccessListener { location ->
+            if (location != null) {
+                onResult(location.latitude, location.longitude)
+            }
+        }
+        .addOnFailureListener {
+            // Fallback to last known location
+            client.lastLocation.addOnSuccessListener { last ->
+                if (last != null) {
+                    onResult(last.latitude, last.longitude)
+                }
+            }
+        }
 }
 
 @Composable
@@ -263,7 +353,6 @@ fun DeparturesScreen(
     onRefresh: () -> Unit
 ) {
     Column(Modifier.fillMaxSize()) {
-        // Stop header
         Surface(
             color = MaterialTheme.colorScheme.primaryContainer,
             modifier = Modifier.fillMaxWidth()
@@ -342,7 +431,6 @@ fun DepartureCard(departure: Departure) {
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Line badge
             Box(
                 modifier = Modifier
                     .size(56.dp)
@@ -379,7 +467,6 @@ fun DepartureCard(departure: Departure) {
                     )
                 }
 
-                // Vehicle allocation (AVL)
                 AnimatedVisibility(visible = departure.vehicle != null) {
                     departure.vehicle?.let { v ->
                         Row(
@@ -404,7 +491,6 @@ fun DepartureCard(departure: Departure) {
                 }
             }
 
-            // Times column
             Column(horizontalAlignment = Alignment.End) {
                 val expected = formatTime(departure.expectedDepartureTime)
                 val aimed = formatTime(departure.aimedDepartureTime)
@@ -462,7 +548,7 @@ private fun formatTime(iso: String?): String? {
         val local = instant.atZone(ZoneId.systemDefault())
         DateTimeFormatter.ofPattern("HH:mm").format(local)
     } catch (_: Exception) {
-        iso.takeLast(5) // fallback
+        iso.takeLast(5)
     }
 }
 
