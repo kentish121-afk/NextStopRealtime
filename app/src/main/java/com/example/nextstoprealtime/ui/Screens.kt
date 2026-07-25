@@ -3,6 +3,8 @@ package com.example.nextstoprealtime.ui
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -17,6 +19,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.DirectionsBus
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
@@ -33,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.nextstoprealtime.model.Departure
 import com.example.nextstoprealtime.model.Stop
+import com.example.nextstoprealtime.notifications.ArrivalReminderScheduler
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
@@ -151,6 +155,12 @@ fun SearchScreen(
         if (fineGranted || coarseGranted) {
             permissionDenied = false
             fetchCurrentLocation(context, onNearbyRequested)
+
+            // Optionally request background location (Android 10+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && fineGranted) {
+                // Background location is requested in a second step when the user wants continuous monitoring.
+                // For now we only use foreground location for "Near me".
+            }
         } else {
             permissionDenied = true
         }
@@ -195,7 +205,6 @@ fun SearchScreen(
 
         Spacer(Modifier.height(8.dp))
 
-        // Near me button (uses ACCESS_FINE_LOCATION)
         OutlinedButton(
             onClick = { requestNearby() },
             modifier = Modifier.fillMaxWidth(),
@@ -267,7 +276,7 @@ fun SearchScreen(
                     style = MaterialTheme.typography.titleMedium
                 )
                 Text(
-                    "Enter a stop name or ATCO code, or tap “Near me” to find stops around your current location (requires location permission).",
+                    "Enter a stop name or ATCO code, or tap “Near me” to find stops around your current location.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp)
@@ -299,7 +308,6 @@ private fun fetchCurrentLocation(
             }
         }
         .addOnFailureListener {
-            // Fallback to last known location
             client.lastLocation.addOnSuccessListener { last ->
                 if (last != null) {
                     onResult(last.latitude, last.longitude)
@@ -407,7 +415,7 @@ fun DeparturesScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     items(departures, key = { it.id ?: it.hashCode().toLong() }) { dep ->
-                        DepartureCard(dep)
+                        DepartureCard(departure = dep, stopName = stop.displayName)
                     }
                 }
             }
@@ -416,125 +424,164 @@ fun DeparturesScreen(
 }
 
 @Composable
-fun DepartureCard(departure: Departure) {
+fun DepartureCard(departure: Departure, stopName: String) {
+    val context = LocalContext.current
     val isLive = departure.live == true || departure.expectedDepartureTime != null
     val delayMinutes = departure.delay?.let { it / 60 }
+    var reminderSet by remember { mutableStateOf(false) }
+
+    val timeForReminder = departure.expectedDepartureTime ?: departure.aimedDepartureTime
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(MaterialTheme.colorScheme.primary),
-                contentAlignment = Alignment.Center
+        Column(Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = departure.service?.lineName ?: "?",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp,
-                    maxLines = 1
-                )
-            }
-
-            Spacer(Modifier.width(14.dp))
-
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = departure.destination?.display ?: "Unknown destination",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                val operator = departure.service?.operators?.firstOrNull()?.name
-                if (!operator.isNullOrBlank()) {
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.primary),
+                    contentAlignment = Alignment.Center
+                ) {
                     Text(
-                        text = operator,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = departure.service?.lineName ?: "?",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                        maxLines = 1
                     )
                 }
 
-                AnimatedVisibility(visible = departure.vehicle != null) {
-                    departure.vehicle?.let { v ->
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
+                Spacer(Modifier.width(14.dp))
+
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = departure.destination?.display ?: "Unknown destination",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    val operator = departure.service?.operators?.firstOrNull()?.name
+                    if (!operator.isNullOrBlank()) {
+                        Text(
+                            text = operator,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    AnimatedVisibility(visible = departure.vehicle != null) {
+                        departure.vehicle?.let { v ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(top = 4.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.DirectionsBus,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.tertiary
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    text = v.display,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.tertiary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Column(horizontalAlignment = Alignment.End) {
+                    val expected = formatTime(departure.expectedDepartureTime)
+                    val aimed = formatTime(departure.aimedDepartureTime)
+
+                    if (expected != null) {
+                        Text(
+                            text = expected,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isLive) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurface
+                        )
+                        if (aimed != null && aimed != expected) {
+                            Text(
+                                text = "sched $aimed",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else if (aimed != null) {
+                        Text(
+                            text = aimed,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    if (isLive) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(4.dp),
                             modifier = Modifier.padding(top = 4.dp)
                         ) {
-                            Icon(
-                                Icons.Default.DirectionsBus,
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp),
-                                tint = MaterialTheme.colorScheme.tertiary
-                            )
-                            Spacer(Modifier.width(4.dp))
                             Text(
-                                text = v.display,
-                                style = MaterialTheme.typography.labelMedium,
+                                text = when {
+                                    delayMinutes != null && delayMinutes > 0 -> "+${delayMinutes}m LIVE"
+                                    delayMinutes != null && delayMinutes < 0 -> "${delayMinutes}m LIVE"
+                                    else -> "LIVE"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.tertiary,
-                                fontWeight = FontWeight.Medium
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                fontWeight = FontWeight.Bold
                             )
                         }
                     }
                 }
             }
 
-            Column(horizontalAlignment = Alignment.End) {
-                val expected = formatTime(departure.expectedDepartureTime)
-                val aimed = formatTime(departure.aimedDepartureTime)
-
-                if (expected != null) {
-                    Text(
-                        text = expected,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isLive) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurface
-                    )
-                    if (aimed != null && aimed != expected) {
-                        Text(
-                            text = "sched $aimed",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+            // Notify me button
+            if (timeForReminder != null) {
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = {
+                        val id = (departure.id ?: System.currentTimeMillis()).toInt()
+                        val success = ArrivalReminderScheduler.schedule(
+                            context = context,
+                            notificationId = id,
+                            expectedTimeIso = timeForReminder,
+                            lineName = departure.service?.lineName ?: "Bus",
+                            destination = departure.destination?.display ?: "",
+                            stopName = stopName,
+                            minutesBefore = 5
                         )
-                    }
-                } else if (aimed != null) {
-                    Text(
-                        text = aimed,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
+                        if (success) {
+                            reminderSet = true
+                            Toast.makeText(context, "Reminder set for 5 min before", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "Could not set reminder (time in the past?)", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    enabled = !reminderSet,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        Icons.Default.Notifications,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
                     )
-                }
-
-                if (isLive) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f),
-                        shape = RoundedCornerShape(4.dp),
-                        modifier = Modifier.padding(top = 4.dp)
-                    ) {
-                        Text(
-                            text = when {
-                                delayMinutes != null && delayMinutes > 0 -> "+${delayMinutes}m LIVE"
-                                delayMinutes != null && delayMinutes < 0 -> "${delayMinutes}m LIVE"
-                                else -> "LIVE"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.tertiary,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (reminderSet) "Reminder set" else "Notify me 5 min before")
                 }
             }
         }
