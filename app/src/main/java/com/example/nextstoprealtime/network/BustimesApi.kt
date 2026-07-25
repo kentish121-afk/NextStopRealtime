@@ -1,6 +1,7 @@
 package com.example.nextstoprealtime.network
 
 import com.example.nextstoprealtime.model.StopSearchResponse
+import com.example.nextstoprealtime.model.StopsGeoJson
 import com.example.nextstoprealtime.model.TimesResponse
 import com.example.nextstoprealtime.model.VehicleJourneyResponse
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
@@ -21,6 +22,15 @@ interface BustimesApi {
         @Query("search") query: String,
         @Query("limit") limit: Int = 20
     ): StopSearchResponse
+
+    /** Nearby stops via geographic bounding box (used with ACCESS_FINE_LOCATION). */
+    @GET("stops.json")
+    suspend fun getStopsInBounds(
+        @Query("ymin") ymin: Double,
+        @Query("ymax") ymax: Double,
+        @Query("xmin") xmin: Double,
+        @Query("xmax") xmax: Double
+    ): StopsGeoJson
 
     @GET("stops/{atco}/times.json")
     suspend fun getStopTimes(
